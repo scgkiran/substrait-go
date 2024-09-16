@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	substraitgo "github.com/substrait-io/substrait-go"
+	"github.com/substrait-io/substrait-go/extensions"
 	"github.com/substrait-io/substrait-go/types"
 )
 
@@ -48,23 +49,77 @@ func isSupportedType(typeString string) bool {
 }
 
 type typeRegistryImpl struct {
-	typeMap map[string]types.Type
+	typeMap        map[string]types.Type
+	extensionTypes map[string]*extensions.Type
 }
 
-func NewTypeRegistry() TypeRegistry {
-	return &typeRegistryImpl{typeMap: nameToTypeMap}
+func NewTypeRegistry(collection *extensions.Collection) TypeRegistry {
+	typeMap := make(map[string]types.Type)
+	for k, v := range nameToTypeMap {
+		typeMap[k] = v
+	}
+	extensionTypes := collection.GetAllTypes()
+	for _, extType := range extensionTypes {
+		typeMap[extType.Name] = toSubstraitType(extType, typeMap)
+	}
+	return &typeRegistryImpl{typeMap: typeMap, extensionTypes: extensionTypes}
+}
+
+func toSubstraitType(extType *extensions.Type, typeMap map[string]types.Type) types.Type {
+	if len(extType.Parameters) == 0 {
+		fieldTypes := make([]types.Type, 0)
+		if fields, ok := extType.Structure.(map[string]any); ok {
+			for _, v := range fields {
+				typeStr := v.(string)
+				fieldTypes = append(fieldTypes, typeMap[typeStr])
+			}
+		} else if typeStr, ok := extType.Structure.(string); ok {
+			fieldTypes = append(fieldTypes, typeMap[typeStr])
+		}
+
+		return &types.StructType{
+			Nullability: types.NullabilityRequired,
+			Types:       fieldTypes,
+		}
+	}
+
+	params := extType.GetParameters()
+	return &types.UserDefinedType{Nullability: types.NullabilityRequired, TypeParameters: params}
+}
+
+func (t *typeRegistryImpl) isValidExtensionType(baseTypeStr string, parameters []int32) bool {
+	if extType, ok := t.extensionTypes[baseTypeStr]; ok {
+		if len(parameters) != len(extType.Parameters) {
+			return false
+		}
+		for i, p := range parameters {
+			paramDef := extType.Parameters[i]
+			if paramDef.Type != extensions.ParamInteger {
+				return false
+			}
+			paramValue := int(p)
+			if paramValue < paramDef.Min || (paramValue > paramDef.Max && paramDef.Max != 0) {
+				return false
+			}
+		}
+		return true
+	}
+	return true
 }
 
 func (t *typeRegistryImpl) GetTypeFromTypeString(typeString string) (types.Type, error) {
-	return getTypeFromTypeString(typeString, t.typeMap, substraitEnclosure)
+	return getTypeFromTypeString(typeString, t.typeMap, substraitEnclosure, t.isValidExtensionType)
 }
 
-func getTypeFromTypeString(typeString string, typeMap map[string]types.Type, enclosure typeEnclosure) (types.Type, error) {
+func getTypeFromTypeString(typeString string, typeMap map[string]types.Type, enclosure typeEnclosure, isValidExtType func(baseTypeStr string, parameters []int32) bool) (types.Type, error) {
 	baseType, parameters, err := extractTypeAndParameters(typeString, enclosure)
 	if err != nil {
 		return nil, err
 	}
 
+	if isValidExtType != nil && !isValidExtType(baseType, parameters) {
+		return nil, substraitgo.ErrInvalidType
+	}
 	nullable := types.NullabilityRequired
 	if strings.HasSuffix(baseType, "?") {
 		baseType = baseType[:len(baseType)-1]
@@ -98,6 +153,15 @@ func getTypeWithParameters(typ types.Type, parameters []int32) (types.Type, erro
 		case *types.VarCharType:
 			return &types.VarCharType{Length: parameters[0]}, nil
 		}
+	case *types.UserDefinedType:
+		if len(parameters) == 0 {
+			return typ, nil
+		}
+		params := make([]types.TypeParam, len(parameters))
+		for i, p := range parameters {
+			params[i] = types.IntegerParameter(p)
+		}
+		return &types.UserDefinedType{Nullability: types.NullabilityRequired, TypeParameters: params}, nil
 	default:
 		if len(parameters) != 0 {
 			return nil, substraitgo.ErrInvalidType
@@ -198,11 +262,11 @@ func (t *localTypeRegistryImpl) containerEnd() string {
 }
 
 func (t *localTypeRegistryImpl) GetTypeFromTypeString(typeString string) (types.Type, error) {
-	return getTypeFromTypeString(typeString, t.nameToType, substraitEnclosure)
+	return getTypeFromTypeString(typeString, t.nameToType, substraitEnclosure, nil)
 }
 
 func (t *localTypeRegistryImpl) GetSubstraitTypeFromLocalType(localType string) (types.Type, error) {
-	return getTypeFromTypeString(localType, t.localNameToType, t)
+	return getTypeFromTypeString(localType, t.localNameToType, t, nil)
 }
 
 func (t *localTypeRegistryImpl) GetLocalTypeFromSubstraitType(typ types.Type) (string, error) {

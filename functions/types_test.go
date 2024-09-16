@@ -5,12 +5,14 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	substraitgo "github.com/substrait-io/substrait-go"
+	"github.com/substrait-io/substrait-go/extensions"
 	"github.com/substrait-io/substrait-go/types"
 )
 
 func TestTypeRegistry(t *testing.T) {
-	typeRegistry := NewTypeRegistry()
+	typeRegistry := NewTypeRegistry(&extensions.DefaultCollection)
 	tests := []struct {
 		name string
 		want types.Type
@@ -62,6 +64,11 @@ func TestTypeRegistry(t *testing.T) {
 		{"fixedchar?<10>", &types.FixedCharType{Length: 10, Nullability: types.NullabilityNullable}},
 		{"fixedbinary<10>", &types.FixedBinaryType{Length: 10, Nullability: types.NullabilityRequired}},
 		{"fixedbinary?<10>", &types.FixedBinaryType{Length: 10, Nullability: types.NullabilityNullable}},
+		{"point", &types.StructType{Types: []types.Type{&types.Int32Type{}, &types.Int32Type{}}, Nullability: types.NullabilityRequired}},
+		{"line", &types.StructType{Types: []types.Type{
+			&types.StructType{Types: []types.Type{&types.Int32Type{}, &types.Int32Type{}}, Nullability: types.NullabilityRequired},
+			&types.StructType{Types: []types.Type{&types.Int32Type{}, &types.Int32Type{}}, Nullability: types.NullabilityRequired},
+		}, Nullability: types.NullabilityRequired}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -85,8 +92,93 @@ func TestTypeRegistry(t *testing.T) {
 	}
 }
 
+func TestUserDefinedTypes(t *testing.T) {
+	extensionTypesYAML := `---
+types:
+  - name: point
+    structure:
+      latitude: i32
+      longitude: i32
+  - name: line
+    structure:
+      start: point
+      end: point
+  - name: varbinary
+    parameters:
+      - name: length
+        type: integer
+        max: 8388608
+`
+	const uri = "http://localhost/sample.yaml"
+	var c extensions.Collection
+	require.NoError(t, c.Load(uri, strings.NewReader(extensionTypesYAML)))
+
+	typeRegistry := NewTypeRegistry(&c)
+	tests := []struct {
+		name string
+		want types.Type
+	}{
+		{"varbinary<10>", &types.UserDefinedType{TypeParameters: []types.TypeParam{types.IntegerParameter(10)}, Nullability: types.NullabilityRequired}},
+		{"varbinary<8388608>", &types.UserDefinedType{TypeParameters: []types.TypeParam{types.IntegerParameter(8388608)}, Nullability: types.NullabilityRequired}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			typ, err := typeRegistry.GetTypeFromTypeString(tt.name)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.want, typ)
+		})
+	}
+
+	negativeTests := []struct {
+		name string
+	}{
+		{"varbinary<8388609>"},
+		{"varbinary"},
+	}
+	for _, tt := range negativeTests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := typeRegistry.GetTypeFromTypeString(tt.name)
+			assert.Error(t, err)
+		})
+	}
+
+	binaryFunctionsYAML := `---
+scalar_functions:
+  -
+    name: "to_binary"
+    description: >
+        Converts a string to a binary string.
+    impls:
+      - args:
+          - name: string_expr
+            type: string
+            description: "The string to convert to binary."
+        return_type: varbinary<L>
+        description: "The binary representation of the input string in hex."
+`
+	const uri2 = "http://localhost/binary_functions.yaml"
+	require.NoError(t, c.Load(uri2, strings.NewReader(binaryFunctionsYAML)))
+
+	functionRegistry := NewFunctionRegistry(&c)
+	tests1 := []struct {
+		numArgs       int
+		localName     string
+		substraitName string
+	}{
+		{1, "to_binary", "to_binary"},
+	}
+	for _, tt := range tests1 {
+		t.Run(tt.substraitName, func(t *testing.T) {
+			funcs := functionRegistry.GetScalarFunctions(tt.substraitName, tt.numArgs)
+			assert.Len(t, funcs, 1)
+			assert.Len(t, funcs[0].Args(), 1)
+			// TODO check return type
+		})
+	}
+}
+
 func TestLocalTypeRegistry(t *testing.T) {
-	typeRegistry := NewTypeRegistry()
+	typeRegistry := NewTypeRegistry(&extensions.DefaultCollection)
 	testDialect := `---
 name: testSql
 type: sql
