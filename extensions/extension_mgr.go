@@ -204,6 +204,14 @@ func (c *Collection) URILoaded(uri string) bool {
 	return ok
 }
 
+func (c *Collection) GetAllTypes() map[string]*Type {
+	result := make(map[string]*Type)
+	for _, v := range c.typeMap {
+		result[v.Name] = &v
+	}
+	return result
+}
+
 func (c *Collection) GetAllScalarFunctions() []*ScalarFunctionVariant {
 	return getValues(c.scalarMap)
 }

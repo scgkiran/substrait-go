@@ -239,7 +239,7 @@ scalar_functions:
 			dialect, err := LoadDialect(t.Name(), strings.NewReader(tt.dialectYaml))
 			assert.NoError(t, err)
 
-			typeRegistry := NewTypeRegistry()
+			typeRegistry := NewTypeRegistry(&extensions.DefaultCollection)
 			_, err = dialect.LocalizeTypeRegistry(typeRegistry)
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), tt.error)

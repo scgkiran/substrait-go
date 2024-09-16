@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	substraitgo "github.com/substrait-io/substrait-go"
+	"github.com/substrait-io/substrait-go/types"
 	"github.com/substrait-io/substrait-go/types/parser"
 )
 
@@ -39,6 +40,27 @@ type Type struct {
 	Variadic   bool
 	Structure  TypeDef `yaml:",omitempty"`
 	Parameters []TypeParamDef
+}
+
+func (t *Type) GetParameters() []types.TypeParam {
+	params := make([]types.TypeParam, 0, len(t.Parameters))
+	for _, p := range t.Parameters {
+		switch p.Type {
+		case ParamDataType:
+			params = append(params, &types.DataTypeParameter{})
+		case ParamBool:
+			params = append(params, types.BooleanParameter(false))
+		case ParamInteger:
+			params = append(params, types.IntegerParameter(p.Max))
+		case ParamEnum:
+			params = append(params, types.EnumParameter(""))
+		case ParamString:
+			params = append(params, types.StringParameter(""))
+		default:
+			panic(fmt.Sprintf("unknown parameter type %s", p.Type))
+		}
+	}
+	return params
 }
 
 type TypeVariationFunctions string
